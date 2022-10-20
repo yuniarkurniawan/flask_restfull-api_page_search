@@ -33,6 +33,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 ma = Marshmallow(app)
 
+
 class Author(db.Model):
 
     __tablename__ = "author"
@@ -61,6 +62,7 @@ class Book(db.Model):
     created_date = db.Column(db.DateTime, server_default=db.func.now())
     author_id = db.Column(db.Integer(), db.ForeignKey('author.id'))
     author = db.relationship("Author",)
+    stock = db.Column(db.Integer(), default=0)
 
     def __init__(self, **args) -> None:
         self.title = args['title']
@@ -160,6 +162,14 @@ def response_with(response, value=None, message=None, error=None,
     return make_response(jsonify(result), response['http_code'], headers)
 
 
+# @app.route("/api/v1/books/maximum_stock", methods=['GET'])
+# def get_book_maximum_Stock():
+
+#     try:
+#         fetch_book = Book.query.filter(func.max(Book.stock))
+#     except Exception as e:
+#         raise e
+
 
 @app.route("/api/v1/books", methods=['GET'])
 def get_book_lists():
@@ -170,7 +180,8 @@ def get_book_lists():
     search = search.lower()
 
     try:
-        
+
+        '''
         # fetch_book = Book.query.filter(func.lower(Book.title).like('%'+search+'%')
         #                            | func.lower(Book.description)
         #                            .like('%'+search+'%')
@@ -179,21 +190,52 @@ def get_book_lists():
         #     .paginate(page=page, per_page=per_page)
 
 
-        fetch_book = Book.query.filter(func.lower(Book.title).like('%'+search+'%')
-                                   | func.lower(Book.description)
-                                   .like('%'+search+'%')
-                                   | func.cast(Book.year, String).like('%'+search+'%'))\
+        # fetch_book = Book.query.filter(func.lower(Book.title).like('%'+search+'%')
+        #                            | func.lower(Book.description)
+        #                            .like('%'+search+'%')
+        #                            | func.cast(Book.year, String).like('%'+search+'%'))\
+        #     .order_by(Book.id.desc())\
+        #     .paginate(page=page, per_page=per_page)
+
+        # fetch_book = Book.query.join(Author) .filter(func.lower(Book.title).like('%'+search+'%')
+        #                            | func.lower(Book.description)
+        #                            .like('%'+search+'%')
+        #                            | func.cast(Book.year, String).like('%'+search+'%'))\
+        #     .order_by(Book.id.desc())\
+        #     .paginate(page=page, per_page=per_page)
+        '''
+
+        fetch_book = db.session.query(Book.id,
+                                      Book.title,
+                                      Book.year,
+                                      Book.description,
+                                      Author.first_name,
+                                      Author.last_name)\
+            .join(Author, Book.author_id == Author.id)\
+            .filter(func.lower(Book.title).like('%'+search+'%')
+                    | func.lower(Book.description)
+                    .like('%'+search+'%')
+                    | func.cast(Book.year, String).like('%'+search+'%')
+                    | func.lower(Author.first_name).like('%'+search+'%')
+                    | func.lower(Author.last_name).like('%'+search+'%'))\
             .order_by(Book.id.desc())\
             .paginate(page=page, per_page=per_page)
 
         list_books = list()
         for data in fetch_book.items:
+            # dict_data = {}
+            # dict_data['id'] = data.id
+            # dict_data['title'] = data.title
+            # dict_data['year'] = data.year
+            # dict_data['description'] = data.description
+            # dict_data['author'] = data.author.first_name + " " + data.author.last_name
+            # list_books.append(dict_data)
             dict_data = {}
-            dict_data['id'] = data.id
-            dict_data['title'] = data.title
-            dict_data['year'] = data.year
-            dict_data['description'] = data.description
-            dict_data['author'] = data.author.first_name
+            dict_data['id'] = data[0]
+            dict_data['title'] = data[1]
+            dict_data['year'] = data[2]
+            dict_data['description'] = data[4]
+            dict_data['author'] = data[4] + " " + data[5]
             list_books.append(dict_data)
 
         pagination = {
