@@ -1,6 +1,6 @@
 from flask import Flask, request, make_response, jsonify
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import func, sql, String
+from sqlalchemy import func, sql, String, text
 from flask_marshmallow import Marshmallow
 from marshmallow import Schema, fields
 
@@ -24,6 +24,12 @@ SUCCESS_201 = {
 SUCCESS_204 = {
     'http_code': 204,
     'code': 'success'
+}
+
+INVALID_INPUT_422 = {
+    "http_code": 422,
+    "code": "invalidInput",
+    "message": "Invalid input"
 }
 
 
@@ -50,6 +56,9 @@ class Author(db.Model):
         self.last_name = args['last_name']
         self.books = args['books']
 
+    def __repr__(self):
+        return f'<Author : {self.first_name}>'
+
 
 class Book(db.Model):
 
@@ -61,114 +70,149 @@ class Book(db.Model):
     description = db.Column(db.String(255))
     created_date = db.Column(db.DateTime, server_default=db.func.now())
     author_id = db.Column(db.Integer(), db.ForeignKey('author.id'))
-    author = db.relationship("Author",)
+    author = db.relationship("Author",overlaps="Author,books")
     stock = db.Column(db.Integer(), default=0)
 
     def __init__(self, **args) -> None:
         self.title = args['title']
         self.description = args['description']
         self.year = args['year']
+        self.stock = args['stock']
+
+
+class BookSchema(ma.Schema):
+    class Meta(ma.Schema.Meta):
+        model = Book
+        sqla_session = db.session
+
+    id = fields.Integer(dump_only=True)
+    title = fields.String(required=True)
+    year = fields.String(required=True)
+    description = fields.String()
+    stock = fields.Integer()
+
+
+class AuthorSchema(ma.Schema):
+    class Meta(ma.Schema.Meta):
+        model = Author
+        sqla_session = db.session
+
+    id = fields.Integer(dump_only=True)
+    first_name = fields.String(required=True)
+    last_name = fields.String(required=True)
+    created_date = fields.String(dump_only=True)
+    total_books = fields.Integer()
+    books = fields.Nested(BookSchema, many=True, only=['id','title', 'year', 'description'])
+
 
 
 db.init_app(app)
 with app.app_context():
     db.create_all()
 
-'''
-list_book_data = [
-    {
-        "title": "KKN Di Desa Penari",
-        "description": "Novel fiksi misteri",
-        "year": 2010
-    },
-    {
-        "title": "Sewu Dino",
-        "description": "Novel fiksi misteri",
-        "year": 2019
-    },
-    {
-        "title": "Jeritan Malam",
-        "description": "Novel fiksi misteri",
-        "year": 2020
-    },
-    {
-        "title": "The Davinci Code",
-        "description": "Novel fiksi ilmiah",
-        "year": 2019
-    },
-    {
-        "title": "Deception Point",
-        "description": "Novel fiksi ilmiah",
-        "year": 2009
-    },
-    {
-        "title": "Digital Fortress",
-        "description": "Novel fiksi ilmiah",
-        "year": 2015
-    },
-    {
-        "title": "The Lost Symbol",
-        "description": "Novel fiksi ilmiah",
-        "year": 2017
-    },
-    {
-        "title": "Angles And Demonds",
-        "description": "Novel fiksi ilmiah",
-        "year": 2014
-    },
-    {
-        "title": "The Origin",
-        "description": "Novel fiksi ilmiah",
-        "year": 2021
-    }
-]
-
-list_author_book = list()
-for data in list_book_data:
-    book = Book(title=data['title'],
-                description=data['description'],
-                year=data['year'])
-    list_author_book.append(book)
-
-author = Author(first_name="Yuniar",
-                last_name="Kurniawan",
-                books=list_author_book)
-db.session.add(author)
-db.session.commit()
-'''
 
 
-def response_with(response, value=None, message=None, error=None,
-                  headers={}, pagination=None):
+@app.route("/api/v1/books/count_by_author", methods=['GET'])
+def get_count_by_author():
 
-    result = {}
-    if value is not None:
-        result.update(value)
+    search = request.args.get('search', type=str)
+    search = search.lower()
 
-    if response.get('message', None) is not None:
-        result.update({'message': response['message']})
+    sql_statement = """
+        SELECT 
+            author.first_name,
+            count(book.id) as total_books
+        FROM 
+         book join author on book.author_id = author.id
+        WHERE 
+         lower(author.first_name) LIKE :search
+         AND book.year = :year 
+        GROUP BY author.id;
+    """
 
-    result.update({'code': response['code']})
+    result = db.engine.execute(text(sql_statement), {"search": '%'+search+'%', "year": 2019}).fetchall()
+    author_schema = AuthorSchema(many=True, only=['first_name', 'total_books'])
+    list_out_data = author_schema.dump(result)
 
-    if error is not None:
-        result.update({'errors': error})
-
-    if pagination is not None:
-        result.update({'pagination': pagination})\
-
-    headers.update({'Access-Control-Allow-Origin': '*'})
-    headers.update({'server': 'FLask REST API'})
-
-    return make_response(jsonify(result), response['http_code'], headers)
+    return response_with(SUCCESS_200,
+                             value={"data": list_out_data})
 
 
-# @app.route("/api/v1/books/maximum_stock", methods=['GET'])
-# def get_book_maximum_Stock():
+@app.route("/api/v1/books/book_by_author", methods=['GET'])
+def get_book_data_by_author():
 
-#     try:
-#         fetch_book = Book.query.filter(func.max(Book.stock))
-#     except Exception as e:
-#         raise e
+    try:
+
+        list_out_data = []
+        list_authors = Author.query.all()
+        for data in list_authors:
+            dict_author = {}
+            dict_author['id'] = data.id
+            dict_author['name'] = " ".join([data.first_name, data.last_name])
+
+            book_schema = BookSchema(many=True)
+            book_schema.dump(data.books)
+            dict_author['total_books'] = len(data.books)
+            dict_author['books'] = book_schema.dump(data.books)
+            list_out_data.append(dict_author)
+
+        return response_with(SUCCESS_200,
+                             value={"data": list_out_data})
+
+    except Exception as e:
+        raise e
+
+
+
+@app.route("/api/v1/books/update_stock/<int:book_id>", methods=['PATCH'])
+def update_stock_book(book_id):
+    data = request.get_json()
+    db.session.begin()
+    book = Book.query.get_or_404(book_id)
+    if data.get('stock'): book.stock = book.stock + int(data['stock'])
+    db.session.add(book)
+    db.session.commit()
+    book_schema = BookSchema()
+    result = book_schema.dump(book)
+    return response_with(SUCCESS_200, value={"book": result})
+
+
+@app.route("/api/v1/authors", methods=['POST'])
+def create_authors_books():
+
+    try:
+        data = request.get_json()
+        author_schema = AuthorSchema()
+        result = {}
+        
+        if data.get('books'):
+            lists_books = list()
+            for data_dict in data['books']:
+                book = Book(title=data_dict['title'],
+                            description=data_dict['description'],
+                            year=data_dict['year'],
+                            stock=0)
+                lists_books.append(book)
+
+            author = Author(first_name=data['first_name'],
+                            last_name=data['last_name'],
+                            books=lists_books)
+            db.session.add(author)
+            db.session.commit()
+            result = author_schema.dump(author)
+        else:
+            author = Author(first_name=data['first_name'],
+                            last_name=data['last_name'])
+            db.session.add(author)
+            db.session.commit()
+            result = author_schema.dump(author)
+
+        return response_with(SUCCESS_201, value={"author": result})
+
+    except Exception as e:
+        db.session.rollback()
+        return response_with(INVALID_INPUT_422, value={"Expectation": str(e)})
+
 
 
 @app.route("/api/v1/books", methods=['GET'])
@@ -180,30 +224,6 @@ def get_book_lists():
     search = search.lower()
 
     try:
-
-        '''
-        # fetch_book = Book.query.filter(func.lower(Book.title).like('%'+search+'%')
-        #                            | func.lower(Book.description)
-        #                            .like('%'+search+'%')
-        #                            | sql.func.convert(sql.literal_column('VARCHAR(4)'), Book.year, sql.literal_column('4')).like('%'+search+'%'))\
-        #     .order_by(Book.id.desc())\
-        #     .paginate(page=page, per_page=per_page)
-
-
-        # fetch_book = Book.query.filter(func.lower(Book.title).like('%'+search+'%')
-        #                            | func.lower(Book.description)
-        #                            .like('%'+search+'%')
-        #                            | func.cast(Book.year, String).like('%'+search+'%'))\
-        #     .order_by(Book.id.desc())\
-        #     .paginate(page=page, per_page=per_page)
-
-        # fetch_book = Book.query.join(Author) .filter(func.lower(Book.title).like('%'+search+'%')
-        #                            | func.lower(Book.description)
-        #                            .like('%'+search+'%')
-        #                            | func.cast(Book.year, String).like('%'+search+'%'))\
-        #     .order_by(Book.id.desc())\
-        #     .paginate(page=page, per_page=per_page)
-        '''
 
         fetch_book = db.session.query(Book.id,
                                       Book.title,
@@ -223,13 +243,6 @@ def get_book_lists():
 
         list_books = list()
         for data in fetch_book.items:
-            # dict_data = {}
-            # dict_data['id'] = data.id
-            # dict_data['title'] = data.title
-            # dict_data['year'] = data.year
-            # dict_data['description'] = data.description
-            # dict_data['author'] = data.author.first_name + " " + data.author.last_name
-            # list_books.append(dict_data)
             dict_data = {}
             dict_data['id'] = data[0]
             dict_data['title'] = data[1]
@@ -256,6 +269,32 @@ def get_book_lists():
                 BAD_REQUEST_400,
                 value={"Expectation": str(e)}
             )
+
+
+def response_with(response, value=None, message=None, error=None,
+                  headers={}, pagination=None):
+
+    result = {}
+    if value is not None:
+        result.update(value)
+
+    if response.get('message', None) is not None:
+        result.update({'message': response['message']})
+
+    result.update({'code': response['code']})
+
+    if error is not None:
+        result.update({'errors': error})
+
+    if pagination is not None:
+        result.update({'pagination': pagination})\
+
+    headers.update({'Access-Control-Allow-Origin': '*'})
+    headers.update({'server': 'FLask REST API'})
+
+    return make_response(jsonify(result), response['http_code'], headers)
+
+
 
 
 if __name__ == "__main__":
